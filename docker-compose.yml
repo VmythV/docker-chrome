@@ -1,0 +1,25 @@
+services:
+  chrome:
+    platform: linux/amd64
+    image: playwright-chrome:latest
+    build:
+      context: .
+      args:
+        VNC_PASSWORD: "${VNC_PASSWORD:-}"
+    container_name: playwright-chrome
+    shm_size: "2gb"
+    ports:
+      - "9222:9223"   # socat 转发到容器内 Chrome 的 127.0.0.1:9222
+      - "6080:6080"   # noVNC 网页版：http://localhost:6080/vnc.html
+      - "5900:5900"   # 原生 VNC 客户端连接用，不需要可以删掉
+    environment:
+      SCREEN_WIDTH: "1920"
+      SCREEN_HEIGHT: "1080"
+      SCREEN_DEPTH: "24"
+      # EXTRA_CHROME_FLAGS: "--lang=zh-CN"
+    volumes:
+      - chrome-profile:/data/chrome-profile
+    restart: unless-stopped
+
+volumes:
+  chrome-profile:
