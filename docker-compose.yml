@@ -7,6 +7,7 @@ services:
       args:
         VNC_PASSWORD: "${VNC_PASSWORD:-}"
     container_name: playwright-chrome
+    hostname: playwright-chrome # 重建容器后保持 Chrome 进程锁中的主机名稳定
     shm_size: "2gb"
     ports:
       - "9222:9223"   # socat 转发到容器内 Chrome 的 127.0.0.1:9222

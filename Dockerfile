@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         xvfb \
         x11vnc \
         fluxbox \
+        dbus \
         supervisor \
         socat \
         novnc \
@@ -35,7 +36,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 让 http://host:6080/ 直接打开 noVNC 页面
 RUN ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html
 
-RUN mkdir -p ${CHROME_USER_DATA_DIR}
+# 显式保留 Fluxbox 的默认标题栏按钮，避免首次启动反复报告缺少配置。
+RUN printf '\nsession.screen0.titlebar.left: Stick\nsession.screen0.titlebar.right: Minimize Maximize Close\n' \
+        >> /etc/X11/fluxbox/init
+
+RUN mkdir -p "${CHROME_USER_DATA_DIR}" /run/dbus
 
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY start-chrome.sh start-vnc.sh /usr/local/bin/
@@ -54,6 +59,9 @@ RUN set -eu; export LC_ALL=C; \
         x11vnc -storepasswd "$VNC_PASSWORD" /etc/x11vnc.passwd; \
         chmod 600 /etc/x11vnc.passwd; \
     fi
+
+# Supervisor 管理两条 D-Bus 总线，Chrome 继承本容器的会话总线地址。
+ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/session_bus_socket
 
 EXPOSE 9223 5900 6080
 
