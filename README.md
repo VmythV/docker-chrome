@@ -109,6 +109,9 @@ docker start playwright-chrome
 | `9222 → 9223` | CDP 自动化接口，供 Playwright 等程序控制 Chrome | `http://127.0.0.1:9222` |
 | `6080 → 6080` | noVNC 网页，浏览器中查看和操作桌面 | <http://127.0.0.1:6080/vnc.html> |
 | `5900 → 5900` | 原生 VNC，使用 VNC 客户端连接 | 在客户端输入 `127.0.0.1:5900` |
+| `9224 → 9224` | 文件接口，把要上传的文件先送进容器（见「给容器里的 Chrome 送文件」） | `http://127.0.0.1:9224` |
+
+文件接口默认只发布到宿主机回环地址（`127.0.0.1:9224:9224`），并且必须带令牌。
 
 `6080` 和 `5900` 访问同一个桌面，并共用 VNC 密码。原生 VNC 端口不能直接用 HTTP 浏览器打开。其他机器访问时，将 `127.0.0.1` 替换为容器宿主机的 IP。
 
@@ -123,6 +126,49 @@ Chrome 的 CDP 实际监听容器内的回环地址。镜像内置 `socat` 转�
 只需要网页查看桌面时，可以删除宿主机的 `5900:5900` 映射；容器内的 5900 服务仍供 noVNC 使用。
 
 当前 Compose 将端口发布到宿主机所有网卡。只需本机访问时，可将映射分别改为 `127.0.0.1:9222:9223`、`127.0.0.1:6080:6080`、`127.0.0.1:5900:5900`。CDP 没有密码认证，应通过受控网络访问。
+
+## 给容器里的 Chrome 送文件
+
+**为什么需要**：用 CDP 远程控制这个容器里的 Chrome 时，上传文件（`DOM.setFileInputFiles`，Playwright 的 `setInputFiles`、agent-browser 的 `upload` 都走它）只把**路径字符串**交给浏览器，文件内容由**浏览器所在的机器**去读。调用方那台机器上的路径在容器里并不存在，于是页面收到 0 字节，而命令还返回成功 —— 只能从页面文案（如「文件需大于 0」）看出不对。
+
+所以分工是：**调用方先把文件送进容器，拿到容器内的绝对路径，再交给自动化命令，用完删掉。** 容器负责自己这台机器上的文件，调用方不必知道卷是怎么挂的。
+
+先设令牌并重建容器：
+
+```bash
+export FILE_API_TOKEN="$(openssl rand -hex 16)"
+docker compose up -d --build
+```
+
+三个接口都要带 `Authorization: Bearer $FILE_API_TOKEN`，`{jobId}` 必须是 UUID：
+
+```bash
+JOB=11111111-2222-3333-4444-555555555555
+
+# 上传（响应里的 path 就是交给自动化命令的容器内路径）
+curl --fail -X PUT \
+  -H "Authorization: Bearer $FILE_API_TOKEN" \
+  --data-binary @./proof.pdf \
+  "http://127.0.0.1:9224/files/$JOB/proof.pdf"
+# → {"path":"/data/uploads/11111111-.../proof.pdf","name":"proof.pdf","sizeBytes":668}
+
+# 列出这个任务已经送进去的文件
+curl --fail -H "Authorization: Bearer $FILE_API_TOKEN" \
+  "http://127.0.0.1:9224/files/$JOB"
+
+# 用完删掉整个任务目录
+curl --fail -X DELETE -H "Authorization: Bearer $FILE_API_TOKEN" \
+  "http://127.0.0.1:9224/files/$JOB"
+```
+
+存活检查不需要令牌：`curl http://127.0.0.1:9224/healthz`。
+
+约束与兜底：
+
+- 文件名只能是一段（不能带 `/`、`..`），任务目录名必须是 UUID；写入使用 `O_NOFOLLOW`，目标是符号链接时直接失败
+- 超过 `FILE_API_MAX_BYTES` 的请求返回 413；请求体比 `Content-Length` 短时丢弃并返回 400
+- **调用方没来得及 DELETE 也不会堆积**：容器每 10 分钟清一次，删掉修改时间超过 `FILE_API_TTL_HOURS` 的任务目录（调用方可能崩掉或被杀，清理的兜底必须在容器这边）
+- 令牌不对返回 401；`FILE_API_TOKEN` 没设置时这个服务直接退出、不反复重启，`docker compose logs chrome` 里能看到原因
 
 ## Playwright 连接示例
 
@@ -155,6 +201,11 @@ const browser = await chromium.connectOverCDP('http://localhost:9222');
 | `NOVNC_PORT` | `6080` | 容器内 noVNC 网页端口；修改时同步调整端口映射右侧 |
 | `VNC_PORT` | `5900` | 容器内原生 VNC 端口；noVNC 自动使用此值，原生客户端的端口映射也需同步调整 |
 | `DISPLAY` | `:99` | 虚拟显示编号，桌面和 Chrome 共用，通常无需修改 |
+| `FILE_API_TOKEN` | 空 | 文件接口的令牌，所有请求都要带。**留空时不启动文件接口**（Chrome 与 VNC 不受影响） |
+| `FILE_API_PORT` | `9224` | 容器内文件接口监听端口；修改时同步调整端口映射右侧 |
+| `FILE_API_ROOT` | `/data/uploads` | 上传文件的存放目录。刻意不做成卷：任务级临时文件，容器重建即清空 |
+| `FILE_API_MAX_BYTES` | `20971520` | 单个文件大小上限（字节），默认 20 MB |
+| `FILE_API_TTL_HOURS` | `6` | 任务目录的保留时长；超过这个时间的目录由容器自己清掉 |
 
 例如，修改现有 `environment` 配置为：
 

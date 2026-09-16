@@ -9,7 +9,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NOVNC_PORT=6080 \
     VNC_PORT=5900 \
     CDP_PORT=9222 \
-    CDP_PROXY_PORT=9223
+    CDP_PROXY_PORT=9223 \
+    FILE_API_PORT=9224 \
+    FILE_API_ROOT=/data/uploads \
+    FILE_API_MAX_BYTES=20971520 \
+    FILE_API_TTL_HOURS=6
 
 # 基础依赖 + Google Chrome 官方源
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -40,11 +44,14 @@ RUN ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html
 RUN printf '\nsession.screen0.titlebar.left: Stick\nsession.screen0.titlebar.right: Minimize Maximize Close\n' \
         >> /etc/X11/fluxbox/init
 
-RUN mkdir -p "${CHROME_USER_DATA_DIR}" /run/dbus
+# 上传目录刻意不做成卷：任务级临时文件，不需要跨容器保留，重建即清空
+RUN mkdir -p "${CHROME_USER_DATA_DIR}" /run/dbus "${FILE_API_ROOT}" \
+    && chmod 700 "${FILE_API_ROOT}"
 
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-COPY start-chrome.sh start-vnc.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/start-chrome.sh /usr/local/bin/start-vnc.sh
+COPY start-chrome.sh start-vnc.sh file-api.py /usr/local/bin/
+RUN chmod +x /usr/local/bin/start-chrome.sh /usr/local/bin/start-vnc.sh \
+    /usr/local/bin/file-api.py
 
 # 按需将 VNC 密码固化到镜像；不设置时保持免密。
 ARG VNC_PASSWORD=""
@@ -63,7 +70,7 @@ RUN set -eu; export LC_ALL=C; \
 # Supervisor 管理两条 D-Bus 总线，Chrome 继承本容器的会话总线地址。
 ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/session_bus_socket
 
-EXPOSE 9223 5900 6080
+EXPOSE 9223 5900 6080 9224
 
 VOLUME ["/data/chrome-profile"]
 
